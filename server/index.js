@@ -10,6 +10,9 @@ import jwt from 'jsonwebtoken';
 import mongoose from 'mongoose';
 import axios from 'axios';
 import dns from "dns";
+import multer from 'multer';
+import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf.mjs';
+
 import User from '../models/User.js';
 import Conversation from '../models/Conversation.js';
 import Message from '../models/Message.js';
@@ -37,7 +40,8 @@ const MODEL = 'llama-3.3-70b-versatile';
 
 // Middleware
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '15mb' }));
+app.use(express.urlencoded({ limit: '15mb', extended: true }));
 app.use(express.static(path.join(__dirname, '../public')));
 
 const limiter = rateLimit({
@@ -46,6 +50,28 @@ const limiter = rateLimit({
   message: { error: 'Too many requests, please slow down.' },
 });
 app.use('/api/', limiter);
+
+// ─── File Upload Configuration ────────────────────────────────────────────
+const storage = multer.memoryStorage();
+const upload = multer({
+  storage: storage,
+  limits: {
+    fileSize: 10 * 1024 * 1024, // 10MB limit
+  },
+  fileFilter: (req, file, cb) => {
+    const allowedTypes = [
+      'application/pdf',
+      'text/plain',
+      'text/markdown'
+    ];
+    if (allowedTypes.includes(file.mimetype)) {
+      cb(null, true);
+    } else {
+      cb(new Error('File type not supported. Only PDF and text files allowed.'));
+    }
+  }
+});
+// ──────────────────────────────────────────────────────────────────────────
 
 // Auth Middleware
 function authenticateToken(req, res, next) {
@@ -120,6 +146,70 @@ function needsRealTimeInfo(message) {
   return keywords.some(keyword => lowerMessage.includes(keyword));
 }
 
+// ─── PDF TEXT EXTRACTION (PDF.js) ───────────────────────────────
+async function extractPdfText(buffer) {
+  const loadingTask = pdfjsLib.getDocument({
+    data: new Uint8Array(buffer)
+  });
+
+  const pdf = await loadingTask.promise;
+
+  // Safety cap (prevents huge PDFs from freezing server)
+  const maxPages = Math.min(pdf.numPages, 50);
+
+  let extractedText = '';
+
+  for (let i = 1; i <= maxPages; i++) {
+    const page = await pdf.getPage(i);
+    const content = await page.getTextContent();
+    const strings = content.items.map(item => item.str);
+    extractedText += strings.join(' ') + '\n';
+  }
+
+  return extractedText;
+}
+
+// ─── File Upload Route (PDF & Text Only) ──────────────────────────────────
+app.post('/api/upload', authenticateToken, upload.single('file'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: 'No file uploaded' });
+    }
+
+    const file = req.file;
+    let extractedText = '';
+
+    // Handle PDFs
+if (file.mimetype === 'application/pdf') {
+  try {
+    extractedText = await extractPdfText(file.buffer);
+  } catch (pdfError) {
+    console.error('PDF Parse Error:', pdfError);
+    return res.status(500).json({ 
+      error: 'Failed to parse PDF: ' + pdfError.message 
+    });
+  }
+}
+    // Handle text files
+    else if (file.mimetype === 'text/plain' || file.mimetype === 'text/markdown') {
+      extractedText = file.buffer.toString('utf-8');
+    }
+
+    res.json({
+      success: true,
+      filename: file.originalname,
+      fileType: file.mimetype,
+      fileSize: file.size,
+      content: extractedText.substring(0, 50000) // Limit to 50k chars
+    });
+
+  } catch (error) {
+    console.error('Upload error:', error);
+    res.status(500).json({ error: 'Failed to process file: ' + error.message });
+  }
+});
+// ──────────────────────────────────────────────────────────────────────────
+
 // AUTH ROUTES
 
 app.post('/api/auth/signup', async (req, res) => {
@@ -149,7 +239,7 @@ app.post('/api/auth/signup', async (req, res) => {
     const token = jwt.sign(
       { userId: user._id.toString(), email }, 
       JWT_SECRET, 
-      { expiresIn: '7d' }
+      { expiresIn: '30d' }
     );
 
     res.json({
@@ -184,7 +274,7 @@ app.post('/api/auth/login', async (req, res) => {
     const token = jwt.sign(
       { userId: user._id.toString(), email }, 
       JWT_SECRET, 
-      { expiresIn: '7d' }
+      { expiresIn: '30d' }
     );
 
     res.json({
@@ -213,92 +303,8 @@ app.get('/api/auth/me', authenticateToken, async (req, res) => {
 
 // CHAT ROUTES
 
-// app.post('/api/chat/stream', authenticateToken, async (req, res) => {
-//   const { message, conversationId } = req.body;
-
-//   if (!message || typeof message !== 'string') {
-//     return res.status(400).json({ error: 'Message is required.' });
-//   }
-
-//   try {
-//     let conversation;
-
-//     if (conversationId) {
-//       conversation = await Conversation.findById(conversationId);
-      
-//       if (!conversation || conversation.userId.toString() !== req.userId) {
-//         return res.status(403).json({ error: 'Access denied.' });
-//       }
-
-//     } else {
-//       conversation = await Conversation.create({
-//         userId: req.userId,
-//         title: generateTitle(message)
-//       });
-//     }
-
-//     await Message.create({
-//       conversationId: conversation._id,
-//       role: 'user',
-//       content: message
-//     });
-
-//     const messages = await Message.find({ conversationId: conversation._id })
-//       .sort({ createdAt: 1 });
-
-//     const history = messages.map(msg => ({
-//       role: msg.role,
-//       content: msg.content
-//     }));
-
-//     res.setHeader('Content-Type', 'text/event-stream');
-//     res.setHeader('Cache-Control', 'no-cache');
-//     res.setHeader('Connection', 'keep-alive');
-
-//     res.write(`data: ${JSON.stringify({ 
-//       type: 'start', 
-//       conversationId: conversation._id.toString(), 
-//       title: conversation.title 
-//     })}\n\n`);
-
-//     let fullResponse = '';
-
-//     const stream = await groq.chat.completions.create({
-//       model: MODEL,
-//       max_tokens: 2048,
-//       stream: true,
-//       messages: [
-//         { role: 'system', content: process.env.SYSTEM_PROMPT || 'You are a helpful AI assistant.' },
-//         ...history,
-//       ],
-//     });
-
-//     for await (const chunk of stream) {
-//       const text = chunk.choices[0]?.delta?.content || '';
-//       if (text) {
-//         fullResponse += text;
-//         res.write(`data: ${JSON.stringify({ type: 'delta', text })}\n\n`);
-//       }
-//     }
-
-//     await Message.create({
-//       conversationId: conversation._id,
-//       role: 'assistant',
-//       content: fullResponse
-//     });
-
-//     res.write(`data: ${JSON.stringify({ type: 'done' })}\n\n`);
-//     res.end();
-
-//   } catch (err) {
-//     console.error('Streaming error:', err);
-//     res.write(`data: ${JSON.stringify({ type: 'error', message: 'Stream failed.' })}\n\n`);
-//     res.end();
-//   }
-// });
-
 app.post('/api/chat/stream', authenticateToken, async (req, res) => {
-  const { message, conversationId } = req.body;
+  const { message, conversationId, fileContent, fileName } = req.body;
 
   if (!message || typeof message !== 'string') {
     return res.status(400).json({ error: 'Message is required.' });
@@ -321,10 +327,17 @@ app.post('/api/chat/stream', authenticateToken, async (req, res) => {
       });
     }
 
+    // Prepare user message with file context
+    let userMessageForDB = message;
+    
+    if (fileContent) {
+      userMessageForDB = `[File: ${fileName}]\n\nFile content:\n${fileContent.substring(0, 1000)}...\n\n---\n\n${message}`;
+    }
+
     await Message.create({
       conversationId: conversation._id,
       role: 'user',
-      content: message
+      content: userMessageForDB
     });
 
     const messages = await Message.find({ conversationId: conversation._id })
@@ -347,6 +360,16 @@ app.post('/api/chat/stream', authenticateToken, async (req, res) => {
 
     let fullResponse = '';
 
+    // Build message content for AI
+    let messageContent;
+    
+    if (fileContent) {
+      // For PDF/text files
+      messageContent = `[User uploaded file: ${fileName}]\n\nFile content:\n${fileContent}\n\n---\n\nUser question: ${message}`;
+    } else {
+      messageContent = message;
+    }
+
     // Check if query needs real-time information
     let searchContext = '';
     if (needsRealTimeInfo(message)) {
@@ -367,15 +390,21 @@ app.post('/api/chat/stream', authenticateToken, async (req, res) => {
       }
     }
 
+    // Build messages for AI
+    const messagesForAI = [
+      { role: 'system', content: (process.env.SYSTEM_PROMPT || 'You are a helpful AI assistant.') + searchContext },
+      ...history.slice(-5)
+    ];
+    
+    // Add current message
+    messagesForAI.push({ role: 'user', content: messageContent });
+
     // Stream response from AI
     const stream = await groq.chat.completions.create({
       model: MODEL,
       max_tokens: 2048,
       stream: true,
-      messages: [
-        { role: 'system', content: (process.env.SYSTEM_PROMPT || 'You are a helpful AI assistant.') + searchContext },
-        ...history,
-      ],
+      messages: messagesForAI
     });
 
     for await (const chunk of stream) {
@@ -495,5 +524,6 @@ app.listen(PORT, () => {
   console.log(`\n🚀 Orion AI running at http://localhost:${PORT}`);
   console.log(`🤖 Model: ${MODEL} (via Groq)`);
   console.log(`💾 Database: MongoDB`);
-  console.log(`🔐 Auth: JWT-based\n`);
+  console.log(`🔐 Auth: JWT-based`);
+  console.log(`📄 File support: PDF & Text files\n`);
 });

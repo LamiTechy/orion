@@ -51,11 +51,32 @@
 
     <div class="input-area">
       <div class="input-row">
+        <!-- ← ADDED: File upload button -->
+        <button class="file-btn" id="fileBtn" title="Upload file (PDF, image, text)">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor">
+            <path d="M14,2H6A2,2 0 0,0 4,4V20A2,2 0 0,0 6,22H18A2,2 0 0,0 20,20V8L14,2M18,20H6V4H13V9H18V20M12,19L8,15H10.5V12H13.5V15H16L12,19Z"/>
+          </svg>
+        </button>
+        <input type="file" id="fileInput" accept=".pdf,.txt,.md,.png,.jpg,.jpeg,.webp" style="display: none;">
+        <!-- ← END ADDED -->
+        
         <textarea id="messageInput" placeholder="Message Orion..." rows="1"></textarea>
         <button class="send-btn" id="sendBtn">
           <svg viewBox="0 0 24 24"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
         </button>
       </div>
+      
+      <!-- ← ADDED: File preview area -->
+      <div class="file-preview" id="filePreview" style="display: none;">
+        <div class="file-info">
+          <span class="file-icon" id="fileIcon">📄</span>
+          <span class="file-name" id="fileName"></span>
+          <span class="file-size" id="fileSize"></span>
+        </div>
+        <button class="file-remove" id="fileRemove">×</button>
+      </div>
+      <!-- ← END ADDED -->
+      
       <div class="status" id="status">
         <span class="status-dot" id="statusDot"></span>
         <span id="statusText">Ready</span>

@@ -16,6 +16,18 @@ const conversationsList = document.getElementById('conversationsList');
 const userEmail = document.getElementById('userEmail');
 const logoutBtn = document.getElementById('logoutBtn');
 
+const fileBtn = document.getElementById('fileBtn');
+const fileInput = document.getElementById('fileInput');
+const filePreview = document.getElementById('filePreview');
+const fileName = document.getElementById('fileName');
+const fileSize = document.getElementById('fileSize');
+const fileIcon = document.getElementById('fileIcon');
+const fileRemove = document.getElementById('fileRemove');
+
+let uploadedFile = null;
+let fileContent = null;
+let uploadedFileIsImage = false;
+
 let conversationId = null;
 let conversations = [];
 let isStreaming = false;
@@ -35,6 +47,84 @@ messageInput.addEventListener('keydown', (e) => {
     sendMessage();
   }
 });
+
+// ─── File Upload Handlers ──────────────────────────────────────────────────
+
+fileBtn.addEventListener('click', () => fileInput.click());
+
+fileInput.addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+
+  // Validate file size (10MB max)
+  if (file.size > 10 * 1024 * 1024) {
+    alert('File too large. Maximum size is 10MB.');
+    return;
+  }
+
+  uploadedFile = file;
+  
+  // Determine file type icon
+  const isImage = file.type.startsWith('image/');
+  const isPDF = file.type === 'application/pdf';
+  fileIcon.textContent = isImage ? '🖼️' : (isPDF ? '📄' : '📝');
+  
+  // Show preview
+  fileName.textContent = file.name;
+  fileSize.textContent = formatFileSize(file.size);
+  filePreview.style.display = 'flex';
+
+  // Upload and process file
+  setStatus('Processing file...', true);
+  
+  try {
+    const formData = new FormData();
+    formData.append('file', file);
+
+    const response = await fetch('/api/upload', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${token}`
+      },
+      body: formData
+    });
+
+    const data = await response.json();
+    
+    if (!response.ok) {
+      throw new Error(data.error || 'Upload failed');
+    }
+    
+    if (data.success) {
+      fileContent = data.content;
+      uploadedFileIsImage = data.isImage;
+      setStatus(`✓ File ready: ${file.name}`);
+    } else {
+      throw new Error(data.error || 'Failed to process file');
+    }
+  } catch (err) {
+    console.error('Upload error:', err);
+    alert('Failed to upload file: ' + err.message);
+    removeFile();
+  }
+});
+
+fileRemove.addEventListener('click', removeFile);
+
+function removeFile() {
+  uploadedFile = null;
+  fileContent = null;
+  uploadedFileIsImage = false;
+  fileInput.value = '';
+  filePreview.style.display = 'none';
+  setStatus('Ready');
+}
+
+function formatFileSize(bytes) {
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+  return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+}
 
 sendBtn.addEventListener('click', sendMessage);
 newChatBtn.addEventListener('click', createNewConversation);
@@ -95,13 +185,19 @@ async function sendMessage() {
   let accumulatedText = '';
 
   try {
-    const response = await fetch('/api/chat/stream', {
+   const response = await fetch('/api/chat/stream', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${token}`
       },
-      body: JSON.stringify({ message: text, conversationId }),
+      body: JSON.stringify({ 
+        message: text, 
+        conversationId,
+        fileContent: fileContent,
+        fileName: uploadedFile?.name,
+        isImage: uploadedFileIsImage
+      }),
     });
 
     if (!response.ok) {
